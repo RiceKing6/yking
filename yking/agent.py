@@ -70,11 +70,12 @@ class Agent:
     def _sync_memory(self) -> None:
         """有新写入的长期记忆时，注入 system prompt 并提示一次。"""
         if self.memory is not None and self.memory.dirty:
-            self._refresh_system_prompt()
+            self.refresh_system_prompt()
             self.memory.dirty = False
             self._emit({"kind": "memory_saved", "count": len(self.memory.entries)})
 
-    def _refresh_system_prompt(self) -> None:
+    def refresh_system_prompt(self) -> None:
+        """按当前长期记忆重建 system prompt（记忆可能被其他会话/子 Agent 更新过）。"""
         if self.messages and self.messages[0].get("role") == "system":
             self.messages[0]["content"] = self._system_prompt()
 

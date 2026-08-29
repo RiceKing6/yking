@@ -356,6 +356,13 @@ def build_agent(cfg: Config, console: Console) -> Agent:
     )
 
 
+def sync_memory_from_disk(agent: Agent) -> None:
+    """/plan、/multi 执行期间子 Agent 可能保存过长期记忆；重载并刷新主对话的提示词。"""
+    if agent.memory is not None:
+        agent.memory.reload()
+        agent.refresh_system_prompt()
+
+
 def run_multi_mode(cfg: Config, console: Console, request: str) -> int:
     """Multi-Agent（主从架构）：Orchestrator + Planner/Worker/Reviewer。"""
     renderer = EventRenderer(console)
@@ -452,12 +459,14 @@ def run_repl(cfg: Config, console: Console) -> int:
                     console.print("[dim]用法: /plan <需求>  例如: /plan 写一个批量重命名图片的脚本并测试[/dim]")
                 else:
                     run_plan_mode(cfg, console, request)
+                    sync_memory_from_disk(agent)
             elif cmd == "/multi":
                 request = user_input[len("/multi"):].strip()
                 if not request:
                     console.print("[dim]用法: /multi <需求>  例如: /multi 写一个todo的cli并测试通过[/dim]")
                 else:
                     run_multi_mode(cfg, console, request)
+                    sync_memory_from_disk(agent)
             elif cmd == "/remember":
                 content = user_input[len("/remember"):].strip()
                 if agent.memory is None:
