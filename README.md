@@ -191,6 +191,15 @@ conda run -n yking python tests/test_memory.py      # 记忆系统/上下文压�
 conda run -n yking python tests/test_multi_agent.py # Multi-Agent 三角色协作
 ```
 
+## 已知限制
+
+- 工具可以读写工作目录之外的绝对路径（本地个人工具的取舍，未做路径白名单）；
+- `run_command` 先完整缓冲命令输出再截断（极端大输出会占用内存）；
+- 若系统设置过 `OPENAI_API_KEY` 而未设置 `YKING_API_KEY`，会拿它请求默认的智谱地址导致 401，请在 `.env` 显式配置；
+- 上下文压缩的机械级（找不到轮次边界时）会把较早的用户消息截断到 600 字符，LLM 摘要级则完整保留；
+- 无法按 UTF-8 或系统编码解码的文件（二进制/旧编码如 GBK）会被 `edit_file`/`write_file` 拒绝处理，防止内容损坏，请先转码；
+- 流式输出时中间思考与最终回答样式相同（生成时无法预知后续是否调用工具）。
+
 ## Roadmap（后续可加的功能）
 
 - 会话保存 / 恢复（`/save`、`/resume`），完整对话历史落盘
