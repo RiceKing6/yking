@@ -119,11 +119,38 @@ def test_stream_without_usage_option_fallback() -> None:
     print("  [ok] 不支持 stream_options 的端点自动降级重试")
 
 
+def test_no_retry_mid_stream() -> None:
+    """流开始消费后不再重试：中途断线直接抛错，已显示的增量不会重复输出。"""
+
+    def flaky_stream():
+        yield make_chunk(content="你好")
+        # 模拟流传输中途断线（可重试类错误）
+        raise openai.APIConnectionError(request=SimpleNamespace())
+
+    client, fake = make_client()
+
+    def create(**kwargs):
+        fake.calls.append(kwargs)
+        return flaky_stream()
+
+    fake.create = create
+    deltas = []
+    try:
+        client.chat([{"role": "user", "content": "hi"}], on_text_delta=deltas.append)
+        raise AssertionError("应当抛出连接错误")
+    except openai.APIConnectionError:
+        pass
+    assert deltas == ["你好"], deltas
+    assert len(fake.calls) == 1, "流开始消费后不得重试"
+    print("  [ok] 流式中途断线：不重试、不重复输出，直接抛错交由上层回滚")
+
+
 def main() -> int:
     print("yking streaming 冒烟测试:")
     test_stream_assembly()
     test_stream_disabled_ignores_callback()
     test_stream_without_usage_option_fallback()
+    test_no_retry_mid_stream()
     print("全部通过")
     return 0
 

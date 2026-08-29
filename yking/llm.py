@@ -57,21 +57,15 @@ class LLMClient:
     def _chat_once(self, messages, tools, stream, on_text_delta=None,
                    include_usage=True) -> dict:
         kwargs: dict = {"model": self.model, "messages": messages, "tools": tools or None}
-        for attempt in range(self.max_retries + 1):
-            try:
-                if stream:
-                    if include_usage:
-                        kwargs["stream_options"] = {"include_usage": True}
-                    resp = self.client.chat.completions.create(stream=True, **kwargs)
-                    return self._consume_stream(resp, on_text_delta)
-                resp = self.client.chat.completions.create(**kwargs)
-                break
-            except _RETRYABLE as e:
-                if attempt < self.max_retries:
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                raise RuntimeError(f"请求失败（已重试 {self.max_retries} 次）: {e}") from e
+        if stream:
+            if include_usage:
+                kwargs["stream_options"] = {"include_usage": True}
+            resp = self._create_with_retry(kwargs, stream=True)
+            # 流一旦开始消费就不再重试：中途网络断开时已回调的增量无法撤回，
+            # 重试会让内容重复输出。直接抛错，由上层回滚本轮对话。
+            return self._consume_stream(resp, on_text_delta)
 
+        resp = self._create_with_retry(kwargs, stream=False)
         msg = resp.choices[0].message
         tool_calls = []
         for i, tc in enumerate(msg.tool_calls or []):
@@ -87,6 +81,19 @@ class LLMClient:
                 "completion_tokens": resp.usage.completion_tokens,
             }
         return {"content": msg.content, "tool_calls": tool_calls, "usage": usage}
+
+    def _create_with_retry(self, kwargs: dict, stream: bool):
+        """只对 create() 做有限重试（限流/连接/5xx）；流式内容的消费不在重试范围内。"""
+        for attempt in range(self.max_retries + 1):
+            try:
+                if stream:
+                    return self.client.chat.completions.create(stream=True, **kwargs)
+                return self.client.chat.completions.create(**kwargs)
+            except _RETRYABLE as e:
+                if attempt < self.max_retries:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"请求失败（已重试 {self.max_retries} 次）: {e}") from e
 
     @staticmethod
     def _consume_stream(stream_resp, on_text_delta: TextDeltaCallback | None) -> dict:
