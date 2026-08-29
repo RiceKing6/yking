@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch: # 允许在 GitHub 页面手动触发
 
+# windows-latest 是英文系统（stdout 默认 cp1252），
+# 测试输出含中文会抛 UnicodeEncodeError，强制 UTF-8 模式修复
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   tests:
     runs-on: ${{ matrix.os }}

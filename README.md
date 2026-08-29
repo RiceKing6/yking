@@ -1,3 +1,5 @@
+[![CI](https://github.com/RiceKing6/yking/actions/workflows/ci.yml/badge.svg)](https://github.com/RiceKing6/yking/actions/workflows/ci.yml)
+
 # yking
 
 一个运行在命令行里的编码 Agent：**写代码、改代码、聊天问答**。
