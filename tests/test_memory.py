@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -210,6 +211,39 @@ def test_agent_compression_integration(tmp: Path) -> None:
     print("  [ok] Agent 集成：多轮对话中压缩真实触发，历史被摘要替换")
 
 
+def test_concurrent_saves_and_reload(tmp: Path) -> None:
+    """并行 Worker 同时保存：40 条全部落盘不丢失、JSON 可解析；
+    reload 能拾取其他实例写入的记忆。"""
+    mem = LongTermMemory(tmp / "conc.json", max_entries=100)
+    errors = []
+
+    def worker(tag: str) -> None:
+        try:
+            for i in range(20):
+                r = mem.save(f"{tag}-{i}")
+                assert r.startswith(("OK", "跳过")), r
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert len(mem.entries) == 40, f"并发保存后应恰好 40 条，实际 {len(mem.entries)}"
+
+    mem2 = LongTermMemory(tmp / "conc.json")  # 新实例从磁盘恢复
+    assert len(mem2.entries) == 40
+
+    # 另一个实例写盘后，reload 拾取新记忆并提示需要刷新提示词
+    LongTermMemory(tmp / "conc.json").save("外部新增的记忆")
+    mem2.reload()
+    assert len(mem2.entries) == 41
+    assert any(e["content"] == "外部新增的记忆" for e in mem2.entries)
+    print("  [ok] 并发保存（40 条无损/原子落盘）与 reload 拾取外部写入")
+
+
 def main() -> int:
     print("yking 记忆系统冒烟测试:")
     with tempfile.TemporaryDirectory() as td:
@@ -220,6 +254,7 @@ def main() -> int:
         test_summary_stage(tmp)
         test_agent_memory_integration(tmp)
         test_agent_compression_integration(tmp)
+        test_concurrent_saves_and_reload(tmp)
     print("全部通过")
     return 0
 

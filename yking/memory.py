@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -47,6 +49,8 @@ class LongTermMemory:
         self.max_len = max_len
         self.entries: list[dict] = []  # [{"content", "created"}]
         self.dirty = False             # 有新记忆尚未注入 system prompt
+        # 并行模式下多个 Worker 线程可能同时 save，用锁保护条目列表与落盘
+        self._lock = threading.Lock()
         self._load()
 
     def _load(self) -> None:
@@ -64,27 +68,31 @@ class LongTermMemory:
             self.entries = []  # 记忆文件损坏不应影响主程序
 
     def _persist(self) -> None:
+        """原子落盘：先写临时文件再替换，避免并发/中断写坏 JSON。"""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(
             json.dumps({"entries": self.entries}, ensure_ascii=False, indent=2),
             encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def save(self, content: str) -> str:
-        content = (content or "").strip()[: self.max_len]
-        if not content:
-            return "错误: 记忆内容为空"
-        for e in self.entries:
-            if e["content"].lower() == content.lower():
-                return f"跳过: 已存在相同记忆: {e['content']}"
-        evicted = None
-        if len(self.entries) >= self.max_entries:
-            evicted = self.entries.pop(0)["content"]
-        self.entries.append({
-            "content": content,
-            "created": datetime.now().isoformat(timespec="seconds"),
-        })
-        self.dirty = True
-        self._persist()
+        with self._lock:
+            content = (content or "").strip()[: self.max_len]
+            if not content:
+                return "错误: 记忆内容为空"
+            for e in self.entries:
+                if e["content"].lower() == content.lower():
+                    return f"跳过: 已存在相同记忆: {e['content']}"
+            evicted = None
+            if len(self.entries) >= self.max_entries:
+                evicted = self.entries.pop(0)["content"]
+            self.entries.append({
+                "content": content,
+                "created": datetime.now().isoformat(timespec="seconds"),
+            })
+            self.dirty = True
+            self._persist()
         msg = f"OK: 已记住（第 {len(self.entries)} 条）: {content}"
         if evicted:
             msg += f"\n注意: 记忆已满（上限 {self.max_entries} 条），最旧的已被移除: {evicted}"
@@ -99,27 +107,37 @@ class LongTermMemory:
 
     def forget(self, key: str) -> str:
         """按编号或关键词删除一条记忆。"""
-        key = (key or "").strip()
-        if not key:
-            return "错误: 请给出要删除的编号或关键词"
-        target = None
-        if key.isdigit() and 1 <= int(key) <= len(self.entries):
-            target = self.entries.pop(int(key) - 1)
-        if target is None:
-            for i, e in enumerate(self.entries):
-                if key.lower() in e["content"].lower():
-                    target = self.entries.pop(i)
-                    break
-        if target is None:
-            return f"未找到匹配的记忆: {key}"
-        self._persist()
+        with self._lock:
+            key = (key or "").strip()
+            if not key:
+                return "错误: 请给出要删除的编号或关键词"
+            target = None
+            if key.isdigit() and 1 <= int(key) <= len(self.entries):
+                target = self.entries.pop(int(key) - 1)
+            if target is None:
+                for i, e in enumerate(self.entries):
+                    if key.lower() in e["content"].lower():
+                        target = self.entries.pop(i)
+                        break
+            if target is None:
+                return f"未找到匹配的记忆: {key}"
+            self._persist()
         return f"OK: 已删除: {target['content']}"
 
     def clear(self) -> str:
-        n = len(self.entries)
-        self.entries = []
-        self._persist()
+        with self._lock:
+            n = len(self.entries)
+            self.entries = []
+            self._persist()
         return f"OK: 已清空 {n} 条长期记忆"
+
+    def reload(self) -> None:
+        """重新从磁盘加载（其他会话/子 Agent 可能写过记忆文件）。
+
+        不改变 dirty 标记；调用方需要在重载后自行刷新 system prompt。
+        """
+        with self._lock:
+            self._load()
 
     def render_section(self) -> str:
         """渲染成注入 system prompt 的文本段；无记忆时返回空串。"""
