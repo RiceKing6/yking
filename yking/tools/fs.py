@@ -23,13 +23,27 @@ def resolve_path(ctx: ToolContext, path: str) -> Path:
 
 
 def _decode(data: bytes) -> str:
-    """依次尝试 utf-8 / 系统编码解码文件内容。"""
+    """依次尝试 utf-8 / 系统编码解码文件内容（宽松，用于 read_file 展示）。"""
     for enc in ("utf-8", locale.getpreferredencoding(False)):
         try:
             return data.decode(enc)
         except (UnicodeDecodeError, LookupError):
             continue
     return data.decode("utf-8", errors="replace")
+
+
+def _decode_strict(data: bytes) -> tuple[str, str] | None:
+    """严格解码：成功返回 (文本, 编码)；无法安全解码返回 None。
+
+    edit_file / write_file 用它防止把二进制或旧编码（如 GBK）文件写坏——
+    读得出才允许改，并且按原编码写回。
+    """
+    for enc in ("utf-8", locale.getpreferredencoding(False)):
+        try:
+            return data.decode(enc), enc
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
 
 
 def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000) -> str:
@@ -53,20 +67,47 @@ def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000) -
 
 
 def write_file(ctx: ToolContext, path: str, content: str) -> str:
-    """把内容整体写入文件（覆盖已有内容），自动创建父目录。"""
+    """把内容整体写入文件（覆盖已有内容），自动创建父目录。
+
+    覆盖已存在的文件时按原编码写回；无法安全解码的文件拒绝覆盖，防止内容损坏。
+    """
     p = resolve_path(ctx, path)
+    enc = "utf-8"
+    if p.is_file():
+        try:
+            decoded = _decode_strict(p.read_bytes())
+        except OSError:
+            decoded = ("", "utf-8")
+        if decoded is None:
+            return (f"错误: {p} 不是 UTF-8/系统可解码的文本文件（可能是二进制或旧编码），"
+                    "为避免损坏内容已拒绝覆盖。请先转码或删除该文件。")
+        enc = decoded[1]
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    try:
+        p.write_text(content, encoding=enc)
+    except UnicodeEncodeError as e:
+        return f"错误: 内容无法用原文件编码 {enc} 写回: {e}"
     return f"OK: 已写入 {len(content.encode('utf-8'))} 字节到 {p}"
 
 
 def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str,
               replace_all: bool = False) -> str:
-    """精确字符串替换：old_string 必须与文件内容完全一致（含缩进与换行）。"""
+    """精确字符串替换：old_string 必须与文件内容完全一致（含缩进与换行）。
+
+    按原编码读写；无法安全解码的文件拒绝编辑，防止内容损坏。
+    """
     p = resolve_path(ctx, path)
     if not p.is_file():
         return f"错误: 文件不存在: {p}"
-    text = p.read_text(encoding="utf-8", errors="replace")
+    try:
+        data = p.read_bytes()
+    except OSError as e:
+        return f"错误: 无法读取文件: {e}"
+    decoded = _decode_strict(data)
+    if decoded is None:
+        return (f"错误: {p} 不是 UTF-8/系统可解码的文本文件（可能是二进制或旧编码），"
+                "为避免损坏内容已拒绝编辑。请先转码为 UTF-8 再操作。")
+    text, enc = decoded
     count = text.count(old_string)
     if count == 0:
         return ("错误: old_string 在文件中不存在。请先用 read_file 查看最新内容，"
@@ -80,7 +121,10 @@ def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str,
     else:
         new_text = text.replace(old_string, new_string, 1)
         replaced = 1
-    p.write_text(new_text, encoding="utf-8")
+    try:
+        p.write_bytes(new_text.encode(enc))
+    except UnicodeEncodeError as e:
+        return f"错误: 替换结果无法用原文件编码 {enc} 写回: {e}"
     return f"OK: 已在 {path} 中替换 {replaced} 处"
 
 

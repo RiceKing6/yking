@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -66,6 +67,33 @@ def test_file_tools(ctx: ToolContext) -> None:
     assert r.startswith("错误"), r
 
     print("  [ok] 文件与命令工具")
+
+
+def test_encoding_safety(ctx) -> None:
+    """无法按 UTF-8/系统编码解码的文件必须被拒绝编辑/覆盖，字节原样保留。"""
+    reg = build_registry(ctx)
+    payload = b"\xff\xfe\x81\x9d" * 8  # utf-8 / cp1252 / gbk 严格解码均失败
+    p = ctx.workspace / "legacy.bin"
+    p.write_bytes(payload)
+
+    # patch 掉系统编码回退，让所有平台上都确定性地"无法解码"
+    with patch("yking.tools.fs.locale.getpreferredencoding", return_value="utf-8"):
+        r = execute_tool(reg, ctx, "edit_file",
+                         {"path": "legacy.bin", "old_string": "x", "new_string": "y"})
+        assert r.startswith("错误") and "拒绝" in r, r
+        assert p.read_bytes() == payload, "拒绝编辑后文件字节必须原样保留"
+
+        r = execute_tool(reg, ctx, "write_file",
+                         {"path": "legacy.bin", "content": "overwrite"})
+        assert r.startswith("错误") and "拒绝" in r, r
+        assert p.read_bytes() == payload, "拒绝覆盖后文件字节必须原样保留"
+
+    # 正常 UTF-8 文件的编辑不受影响
+    execute_tool(reg, ctx, "write_file", {"path": "ok.py", "content": "a = 1\n"})
+    r = execute_tool(reg, ctx, "edit_file",
+                     {"path": "ok.py", "old_string": "a = 1", "new_string": "a = 2"})
+    assert r.startswith("OK"), r
+    print("  [ok] 编码安全：无法解码的文件拒绝编辑/覆盖，正常 UTF-8 编辑不受影响")
 
 
 def test_react_loop(ctx: ToolContext) -> None:
@@ -138,6 +166,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         ctx = make_ctx(Path(td))
         test_file_tools(ctx)
+        test_encoding_safety(ctx)
         test_react_loop(ctx)
         test_error_rollback(ctx)
     print("全部通过")
