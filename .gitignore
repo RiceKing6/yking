@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.env
+.yking/
+# 个人面试准备笔记，不随项目公开（如需公开可删除此行）
+interview.md

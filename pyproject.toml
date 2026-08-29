@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yking"
+version = "0.1.0"
+description = "yking - 一个专注于写代码/改代码的命令行编码 Agent（ReAct + Tool Call）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+yking = "yking.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["yking*"]
