@@ -45,19 +45,26 @@ Plan-and-Execute（DAG 计划）+ 流式输出 + CLI 交互**。
 
 ## 快速开始
 
-> 觉得下面写得看不懂？打开 [run.txt](run.txt)，那里是更手把手的 Windows 运行说明。
-
-### 1. 创建独立环境（不污染本地 Python）
+### 1. 克隆仓库并创建独立环境（不污染本地 Python）
 
 ```bash
+git clone https://github.com/RiceKing6/yking.git
+cd yking
 conda create -n yking python=3.12 -y
 conda activate yking
-pip install -e D:\yking        # 可编辑安装，改代码立即生效
+pip install -e .        # 可编辑安装，改代码立即生效
 ```
+
+没有 conda 也可以用 venv：`python -m venv .venv`，Windows 激活 `.venv\Scripts\activate`，Linux/macOS 激活 `source .venv/bin/activate`。
 
 ### 2. 配置模型 API
 
-在项目目录创建 `.env` 文件（yking 启动时自动读取，该文件已被 .gitignore 忽略）：
+复制仓库里的 `.env.example` 为 `.env`，填入你自己的 key（yking 启动时自动读取；`.env` 已被 .gitignore 忽略，不会被提交）：
+
+```bash
+# Windows (CMD):  copy .env.example .env
+# macOS / Linux:  cp .env.example .env
+```
 
 ```ini
 YKING_API_KEY=sk-你的key
