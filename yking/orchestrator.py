@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -201,6 +202,7 @@ class Orchestrator:
         """单个步骤的主循环：Worker 干活 → Reviewer 验收 → 不通过打回重做。"""
         step.status = "running"
         self._emit({"kind": "task_start", "task": step.id, "title": step.title})
+        step_started = time.monotonic()
         dep_reports = []
         for d in step.deps:
             dt = plan.task(d)
@@ -214,12 +216,14 @@ class Orchestrator:
             except KeyboardInterrupt:
                 step.status = "failed"
                 step.report = "被用户中断"
-                self._emit({"kind": "task_failed", "task": step.id, "reason": step.report})
+                self._emit({"kind": "task_failed", "task": step.id, "reason": step.report,
+                            "elapsed": time.monotonic() - step_started})
                 raise
             except Exception as e:
                 step.status = "failed"
                 step.report = f"Worker 执行异常: {type(e).__name__}: {e}"
-                self._emit({"kind": "task_failed", "task": step.id, "reason": step.report})
+                self._emit({"kind": "task_failed", "task": step.id, "reason": step.report,
+                            "elapsed": time.monotonic() - step_started})
                 return
 
             review = None
@@ -236,7 +240,8 @@ class Orchestrator:
                     step.status = "done"
                     step.report = (f"Worker 报告: {worker_report[:1500]}\n"
                                    f"[未经审查：Reviewer 异常 {type(e).__name__}: {e}]")
-                    self._emit({"kind": "task_done", "task": step.id})
+                    self._emit({"kind": "task_done", "task": step.id,
+                                "elapsed": time.monotonic() - step_started})
                     return
                 self._emit({"kind": "review", "task": step.id, "attempt": attempt,
                             "verdict": review.verdict,
@@ -245,7 +250,8 @@ class Orchestrator:
                     step.status = "done"
                     step.report = (f"Worker 报告: {worker_report[:1500]}\n"
                                    f"Reviewer 结论: {review.summary[:500]}")
-                    self._emit({"kind": "task_done", "task": step.id})
+                    self._emit({"kind": "task_done", "task": step.id,
+                                "elapsed": time.monotonic() - step_started})
                     return
                 issues = review.issues
 
@@ -256,7 +262,8 @@ class Orchestrator:
         step.status = "failed"
         step.report = (f"连续 {MAX_WORKER_ATTEMPTS} 次未通过验收。最后一次问题: "
                        + "; ".join(issues))[:500]
-        self._emit({"kind": "task_failed", "task": step.id, "reason": step.report})
+        self._emit({"kind": "task_failed", "task": step.id, "reason": step.report,
+                    "elapsed": time.monotonic() - step_started})
 
     # -- Worker --------------------------------------------------------
     def _run_worker(self, step: PlanTask, attempt: int, issues: list[str],

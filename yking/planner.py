@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from typing import Callable
 
 from .agent import Agent, build_system_prompt
@@ -332,6 +333,7 @@ class PlanExecutor:
     def _run_task(self, plan: Plan, task: PlanTask) -> None:
         task.status = "running"
         self._emit({"kind": "task_start", "task": task.id, "title": task.title})
+        task_started = time.monotonic()
         agent = Agent(
             self.llm,
             self.registry,
@@ -347,26 +349,30 @@ class PlanExecutor:
             task.status = "failed"
             task.report = "被用户中断"
             if not self._cancelled:
-                self._emit({"kind": "task_failed", "task": task.id, "reason": task.report})
+                self._emit({"kind": "task_failed", "task": task.id, "reason": task.report,
+                            "elapsed": time.monotonic() - task_started})
             raise
         except Exception as e:
             task.status = "failed"
             task.report = f"执行异常: {type(e).__name__}: {e}"
             if not self._cancelled:
-                self._emit({"kind": "task_failed", "task": task.id, "reason": task.report})
+                self._emit({"kind": "task_failed", "task": task.id, "reason": task.report,
+                            "elapsed": time.monotonic() - task_started})
             return
         if self._cancelled:
             # 主线程已因 Ctrl+C 把本任务标记为失败，这里不再把结果写回
             return
+        elapsed = time.monotonic() - task_started
         text = (report or "").strip()
         if text.upper().startswith("[FAILED]"):
             task.status = "failed"
             task.report = text[len("[FAILED]"):].lstrip(" :：") or "执行器报告任务失败"
-            self._emit({"kind": "task_failed", "task": task.id, "reason": task.report})
+            self._emit({"kind": "task_failed", "task": task.id, "reason": task.report,
+                        "elapsed": elapsed})
         else:
             task.status = "done"
             task.report = text[:2000]
-            self._emit({"kind": "task_done", "task": task.id})
+            self._emit({"kind": "task_done", "task": task.id, "elapsed": elapsed})
 
     def _executor_prompt(self, plan: Plan, task: PlanTask) -> str:
         parts = [

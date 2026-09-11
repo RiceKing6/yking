@@ -5,11 +5,22 @@ import copy
 import datetime
 import json
 import platform
+import time
 from typing import Callable
 
 from .tools import Tool, ToolContext, execute_tool
 
 StepCallback = Callable[[dict], None]
+
+# 可观测性累计项的初始值（每个 Agent 实例独立统计）
+NEW_USAGE_TOTALS = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "llm_calls": 0,
+    "llm_seconds": 0.0,
+    "tool_calls": 0,
+    "tool_seconds": 0.0,
+}
 
 
 def build_system_prompt(ctx: ToolContext) -> str:
@@ -57,6 +68,8 @@ class Agent:
         self.memory = memory
         self.last_prompt_tokens = 0  # 最近一次请求的真实 prompt tokens，用于触发压缩
         self.base_system_prompt = system_prompt
+        # 进程生命周期内的累计观测数据（token / 调用次数 / 耗时），/clear 不复位
+        self.total_usage: dict = dict(NEW_USAGE_TOTALS)
         self.messages: list[dict] = [{"role": "system", "content": self._system_prompt()}]
 
     # -- 记忆 ----------------------------------------------------------
@@ -89,8 +102,9 @@ class Agent:
         self._sync_memory()
         snapshot = copy.deepcopy(self.messages)  # 出错/中断时回滚，保证消息序列完整
         self.messages.append({"role": "user", "content": user_input})
+        started = time.monotonic()
         try:
-            return self._loop()
+            return self._loop(started)
         except BaseException:
             self.messages = snapshot
             raise
@@ -107,7 +121,7 @@ class Agent:
     def _tool_schemas(self) -> list[dict]:
         return [t.to_openai_schema() for t in self.registry.values()]
 
-    def _loop(self) -> str:
+    def _loop(self, started: float) -> str:
         for step in range(1, self.max_steps + 1):
             self._emit({"kind": "step", "step": step})
             if self.compressor is not None:
@@ -124,10 +138,20 @@ class Agent:
             reply = self.llm.chat(self.messages, self._tool_schemas(),
                                   on_text_delta=on_text_delta)
             usage = reply.get("usage") or {}
+            llm_elapsed = reply.get("elapsed") or 0.0
             if usage.get("prompt_tokens"):
                 self.last_prompt_tokens = usage["prompt_tokens"]
-            if usage:
-                self._emit({"kind": "usage", **usage})
+            # 累计可观测数据
+            self.total_usage["llm_calls"] += 1
+            self.total_usage["llm_seconds"] += llm_elapsed
+            self.total_usage["prompt_tokens"] += usage.get("prompt_tokens") or 0
+            self.total_usage["completion_tokens"] += usage.get("completion_tokens") or 0
+            if usage or reply.get("request_id"):
+                self._emit({"kind": "usage", **usage,
+                            "request_id": reply.get("request_id"),
+                            "elapsed": llm_elapsed,
+                            "attempts": reply.get("attempts"),
+                            "total": dict(self.total_usage)})
 
             content = reply.get("content")
             tool_calls = reply.get("tool_calls") or []
@@ -136,7 +160,8 @@ class Agent:
             if not tool_calls:
                 text = content or "（模型没有返回内容）"
                 self.messages.append({"role": "assistant", "content": text})
-                self._emit({"kind": "final", "text": text})
+                self._emit({"kind": "final", "text": text,
+                            "elapsed": time.monotonic() - started})
                 return text
 
             # 有工具调用：先记录 assistant 消息，再逐个执行并追加观察结果
@@ -160,6 +185,7 @@ class Agent:
                 name = tc["name"]
                 raw_args = tc["arguments"]
                 self._emit({"kind": "tool_call", "name": name, "arguments": raw_args})
+                tool_started = time.monotonic()
                 try:
                     args = json.loads(raw_args) if raw_args and raw_args.strip() else {}
                     if not isinstance(args, dict):
@@ -168,7 +194,11 @@ class Agent:
                     result = f"错误: 工具参数不是合法的 JSON 对象（{e}）: {raw_args[:200]}"
                 else:
                     result = execute_tool(self.registry, self.ctx, name, args)
-                self._emit({"kind": "tool_result", "name": name, "result": result})
+                tool_elapsed = time.monotonic() - tool_started
+                self.total_usage["tool_calls"] += 1
+                self.total_usage["tool_seconds"] += tool_elapsed
+                self._emit({"kind": "tool_result", "name": name, "result": result,
+                            "elapsed": tool_elapsed})
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
@@ -179,5 +209,6 @@ class Agent:
         text = (f"已连续执行 {self.max_steps} 步仍未给出最终回答，本轮先停在这里。"
                 "你可以继续对话让我接着做。")
         self.messages.append({"role": "assistant", "content": text})
-        self._emit({"kind": "final", "text": text})
+        self._emit({"kind": "final", "text": text,
+                    "elapsed": time.monotonic() - started})
         return text
