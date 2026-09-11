@@ -40,3 +40,4 @@ jobs:
           python tests/test_stream.py
           python tests/test_memory.py
           python tests/test_multi_agent.py
+          python tests/test_observability.py

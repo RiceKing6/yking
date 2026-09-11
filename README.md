@@ -191,6 +191,13 @@ conda run -n yking python tests/test_memory.py      # 记忆系统/上下文压�
 conda run -n yking python tests/test_multi_agent.py # Multi-Agent 三角色协作
 ```
 
+## 可观测性
+
+每次模型调用都带请求 ID（同一逻辑请求的重试共享 ID）、墙钟耗时与真实请求次数；
+终端实时显示 `tokens: X 入 / Y 出 · 耗时 · req-N · 累计 …`，工具每次执行的耗时也显示在结果行尾，
+计划/多 Agent 模式的每个任务显示总耗时。用 `/stats` 查看本次运行的累计统计：模型调用次数、
+累计 token、模型与工具总耗时。
+
 ## 已知限制
 
 - 工具可以读写工作目录之外的绝对路径（本地个人工具的取舍，未做路径白名单）；

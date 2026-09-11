@@ -26,6 +26,7 @@ HELP_TEXT = """\
   /help            显示本帮助
   /clear           清空短期对话历史（长期记忆保留）
   /model           查看当前模型配置
+  /stats           查看本次运行的观测统计（累计 token / 调用次数 / 耗时）
   /plan <需求>     Plan-and-Execute：先拆解成 DAG 任务计划，确认后逐步执行
   /multi <需求>    Multi-Agent：Planner 拆解 → Worker 执行 → Reviewer 验收把关
   /remember 内容   写入长期记忆（跨会话保留，例如 /remember 这个项目用 pytest）
@@ -211,11 +212,28 @@ class EventRenderer:
                 first_line = first_line[:160] + "…"
             style = "red" if event["result"].startswith("错误") else "dim"
             prefix = task_tag + " " if task_tag else "  "
-            self._print(f"{prefix}[dim]↳[/dim] [{style}]{first_line}[/{style}]")
+            cost = ""
+            if event.get("elapsed") is not None:
+                cost = f" [dim]({event['elapsed']:.1f}s)[/dim]"
+            self._print(f"{prefix}[dim]↳[/dim] [{style}]{first_line}[/{style}]{cost}")
         elif kind == "usage":
             prefix = task_tag + " " if task_tag else "  "
-            self._print(f"{prefix}[dim]tokens: {event.get('prompt_tokens', '?')} 入 / "
-                        f"{event.get('completion_tokens', '?')} 出[/dim]")
+            bits = []
+            if event.get("prompt_tokens") is not None or event.get("completion_tokens") is not None:
+                bits.append(f"tokens: {event.get('prompt_tokens', '?')} 入 / "
+                            f"{event.get('completion_tokens', '?')} 出")
+            if event.get("elapsed"):
+                bits.append(f"{event['elapsed']:.1f}s")
+            if event.get("request_id"):
+                bits.append(str(event["request_id"]))
+            if event.get("attempts") and event["attempts"] > 1:
+                bits.append(f"重试 {event['attempts'] - 1} 次")
+            total = event.get("total") or {}
+            if total.get("llm_calls"):
+                bits.append(f"累计 {_fmt_count(total.get('prompt_tokens', 0))} 入 / "
+                            f"{_fmt_count(total.get('completion_tokens', 0))} 出 · "
+                            f"{total['llm_calls']} 次调用")
+            self._print(prefix + "[dim]" + " · ".join(bits) + "[/dim]")
         elif kind == "final":
             if task_id and task_id in self._streamed_tasks:
                 self._streamed_tasks.discard(task_id)
@@ -236,9 +254,13 @@ class EventRenderer:
         elif kind == "task_start":
             self._print(f"[bold cyan]▶ 任务 {event['task']}：{event['title']}[/bold cyan]")
         elif kind == "task_done":
-            self._print(f"[green]✓ 任务 {event['task']} 完成[/green]\n")
+            cost = (f" [dim]({event['elapsed']:.1f}s)[/dim]"
+                    if event.get("elapsed") is not None else "")
+            self._print(f"[green]✓ 任务 {event['task']} 完成[/green]{cost}\n")
         elif kind == "task_failed":
-            self._print(f"[red]✗ 任务 {event['task']} 失败：{event['reason'][:200]}[/red]\n")
+            cost = (f" [dim]({event['elapsed']:.1f}s)[/dim]"
+                    if event.get("elapsed") is not None else "")
+            self._print(f"[red]✗ 任务 {event['task']} 失败：{event['reason'][:200]}[/red]{cost}\n")
         elif kind == "task_skipped":
             self._print(f"[yellow]– 任务 {event['task']} 跳过：{event['reason']}[/yellow]")
         elif kind == "review":
@@ -264,6 +286,19 @@ class EventRenderer:
         elif kind == "plan_finished":
             self._print("\n[bold]计划执行完毕[/bold]")
             self.console.print(plan_table(event["plan"]))
+
+
+def _fmt_count(n) -> str:
+    """把较大的 token 数格式化成 1.2k 这种紧凑形式。"""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return str(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
 
 
 def plan_table(plan: Plan) -> Table:
@@ -453,6 +488,13 @@ def run_repl(cfg: Config, console: Console) -> int:
                 console.print("[dim]已清空短期对话历史（长期记忆保留，/memory 查看）。[/dim]")
             elif cmd == "/model":
                 console.print(f"[dim]model={cfg.model}  base_url={cfg.base_url}[/dim]")
+            elif cmd == "/stats":
+                u = agent.total_usage
+                console.print(
+                    f"[dim]本次运行累计：{u['llm_calls']} 次模型调用 · "
+                    f"{_fmt_count(u['prompt_tokens'])} 入 / {_fmt_count(u['completion_tokens'])} 出 tokens · "
+                    f"模型耗时 {u['llm_seconds']:.1f}s · "
+                    f"工具 {u['tool_calls']} 次 / {u['tool_seconds']:.1f}s[/dim]")
             elif cmd == "/plan":
                 request = user_input[len("/plan"):].strip()
                 if not request:
